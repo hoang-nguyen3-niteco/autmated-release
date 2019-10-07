@@ -1,0 +1,20 @@
+{
+  "name": "test-jenskin",
+  "version": "1.0.0",
+  "description": "v1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/haidv7/test-jenskin.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/haidv7/test-jenskin/issues"
+  },
+  "homepage": "https://github.com/haidv7/test-jenskin#readme"
+}
