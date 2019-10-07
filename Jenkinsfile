@@ -1,3 +1,4 @@
+def checkout_stage_result = false
 def bump_version_stage_result = true
 def tag_stage_result = false
 def pull_request_number = ''
@@ -6,13 +7,13 @@ def merged_response_status = ''
 pipeline {
   agent any
 
+  parameters {
+    string(description: 'URL Github Repository (must be in the format of HTTPS protocol)', name: 'PROJECT_URL')
+    string(description: 'Bracnh is used to as base to release', name: 'BRANCH')
+  }
+
   stages {
     stage('Confirm Release') {
-      when {
-        beforeInput true
-        branch "release/*"
-      }
-
       steps {
         script {
           release_version = input message: 'Do you want to release a new version',
@@ -37,9 +38,33 @@ pipeline {
       }
     }
 
+    stage('Checkout code') {
+      steps {
+        echo "Cloning code..."
+
+        script {
+          try {
+            withCredentials([[$class: 'UsernamePasswordMultiBinding', credentialsId:'hoang.nguyen', usernameVariable: 'USERNAME', passwordVariable: 'PASSWORD']]) {
+              origin_url = params.PROJECT_URL.split('//')[1]
+
+              sh """
+                rm -rf app
+                git clone ${params.PROJECT_URL} app
+                cd app
+                git remote set-url origin https://$USERNAME:$PASSWORD@${origin_url}.git
+              """
+            }
+
+            checkout_stage_result = true
+          } catch (e) {
+            checkout_stage_result = false;
+          }
+        }
+      }
+    }
+
     stage('Bumping version') {
       when {
-        branch "release/*"
         expression { release_version != '' }
       }
 
@@ -47,23 +72,18 @@ pipeline {
         // Bumping version in package.json
         echo "Bumping version in package.json to ${release_version}"
 
-        git branch: env.BRANCH_NAME, credentialsId: 'hai.dinh', url: scm.getUserRemoteConfigs()[0].getUrl()
-
         script {
           try {
-            withCredentials([[$class: 'UsernamePasswordMultiBinding', credentialsId:'hai.dinh', usernameVariable: 'USERNAME', passwordVariable: 'PASSWORD']]) {
-              origin_url = scm.getUserRemoteConfigs()[0].getUrl().split('//')[1]
-
-              sh """
-                sed -i 's/"version": .*,/"version": "${release_version}",/' package.json
-                sed -i 's/export IMAGE_VERSION=.*/export IMAGE_VERSION=${release_version}/' docker/.bin/.env.sh
-                git add package.json
-                git add docker/.bin/.env.sh
-                git commit -m "Bumping version to ${release_version}"
-                git remote set-url origin https://$USERNAME:$PASSWORD@${origin_url}
-                git push origin ${env.BRANCH_NAME}
-              """
-            }
+            sh """
+              cd app
+              git checkout ${params.BRANCH}
+              sed -i 's/"version": .*,/"version": "${release_version}",/' package.json
+              sed -i 's/export IMAGE_VERSION=.*/export IMAGE_VERSION=${release_version}/' docker/.bin/.env.sh
+              git add package.json
+              git add docker/.bin/.env.sh
+              git commit -m "Bumping version to ${release_version}"
+              git push origin ${params.BRANCH}
+            """
           } catch (e) {
             bump_version_stage_result = false;
           }
@@ -75,21 +95,20 @@ pipeline {
 
     stage('Creating PR') {
       when {
-        branch "release/*"
         expression { bump_version_stage_result == true }
       }
 
       steps {
         // Create pull request from lastest commit in the current branch
-        echo "Creating new pull request from ${env.BRANCH_NAME} to master ..."
+        echo "Creating new pull request from ${params.BRANCH} to master ..."
 
         script {
-          withCredentials([[$class: 'UsernamePasswordMultiBinding', credentialsId:'hai.dinh', usernameVariable: 'USERNAME', passwordVariable: 'PASSWORD']]) {
-            repo = scm.getUserRemoteConfigs()[0].getUrl().tokenize('/')[3].split("\\.")[0]
-            repo_owner = scm.getUserRemoteConfigs()[0].getUrl().tokenize('/')[2]
+          withCredentials([[$class: 'UsernamePasswordMultiBinding', credentialsId:'hoang.nguyen', usernameVariable: 'USERNAME', passwordVariable: 'PASSWORD']]) {
+            repo = params.PROJECT_URL.tokenize('/')[3]
+            repo_owner = params.PROJECT_URL.tokenize('/')[2]
 
             pull_request_number = sh (
-              script: """curl -s -u "$USERNAME:$PASSWORD" -H 'Content-Type: application/json' -X POST "https://api.github.com/repos/${repo_owner}/${repo}/pulls" -d '{"title":"Release ${release_version}", "body": "Release ${release_version}", "head": "${env.BRANCH_NAME}", "base": "master"}' 2>&1 | grep '"number":' | sed 's/[^0-9]*//g' """,
+              script: """curl -s -u "$USERNAME:$PASSWORD" -H 'Content-Type: application/json' -X POST "https://api.github.com/repos/${repo_owner}/${repo}/pulls" -d '{"title":"Release ${release_version}", "body": "Release ${release_version}", "head": "${params.BRANCH}", "base": "master"}' 2>&1 | grep '"number":' | sed 's/[^0-9]*//g' """,
               returnStdout: true
             ).trim()
           }
@@ -113,22 +132,15 @@ pipeline {
       }
 
       steps {
-        echo "Revert bump version commit in ${env.BRANCH_NAME}"
+        echo "Revert bump version commit in ${params.BRANCH}"
 
-        git branch: env.BRANCH_NAME, credentialsId: 'hai.dinh', url: scm.getUserRemoteConfigs()[0].getUrl()
-
-        script {
-          withCredentials([[$class: 'UsernamePasswordMultiBinding', credentialsId:'hai.dinh', usernameVariable: 'USERNAME', passwordVariable: 'PASSWORD']]) {
-            origin_url = scm.getUserRemoteConfigs()[0].getUrl().split('//')[1]
-
-            sh """
-              git reset --hard HEAD~1
-              git remote set-url origin https://$USERNAME:$PASSWORD@${origin_url}
-              git push origin ${env.BRANCH_NAME} -f
-            """
-          }
+        sh """
+            cd app
+            git checkout ${params.BRANCH}
+            git reset --hard HEAD~1
+            git push origin ${params.BRANCH} -f
+          """
         }
-      }
     }
 
     stage('Merging PR') {
@@ -141,9 +153,9 @@ pipeline {
         echo "Merging pull request #${pull_request_number} to master ..."
 
         script {
-          withCredentials([[$class: 'UsernamePasswordMultiBinding', credentialsId:'hai.dinh', usernameVariable: 'USERNAME', passwordVariable: 'PASSWORD']]) {
-            repo = scm.getUserRemoteConfigs()[0].getUrl().tokenize('/')[3].split("\\.")[0]
-            repo_owner = scm.getUserRemoteConfigs()[0].getUrl().tokenize('/')[2]
+          withCredentials([[$class: 'UsernamePasswordMultiBinding', credentialsId:'hoang.nguyen', usernameVariable: 'USERNAME', passwordVariable: 'PASSWORD']]) {
+            repo = params.PROJECT_URL.tokenize('/')[3]
+            repo_owner = params.PROJECT_URL.tokenize('/')[2]
 
             merged_response_status = sh (
               script: """curl -s -LI -u "$USERNAME:$PASSWORD" -H 'Content-Type: application/json' -X PUT "https://api.github.com/repos/${repo_owner}/${repo}/pulls/${pull_request_number}/merge" -o /dev/null -w '%{http_code}\n' """,
@@ -171,21 +183,17 @@ pipeline {
       steps {
         echo "Tagging..."
 
-        git branch: "master", credentialsId: 'hai.dinh', url: scm.getUserRemoteConfigs()[0].getUrl()
-
         script {
           try {
-            withCredentials([[$class: 'UsernamePasswordMultiBinding', credentialsId:'hai.dinh', usernameVariable: 'USERNAME', passwordVariable: 'PASSWORD']]) {
-              origin_url = scm.getUserRemoteConfigs()[0].getUrl().split('//')[1]
-
-              sh """
-                git tag ${release_version}
-                git remote set-url origin https://$USERNAME:$PASSWORD@${origin_url}
-                git push origin ${release_version}
-              """
+            sh """
+              cd app
+              git checkout master
+              git pull origin master
+              git tag ${release_version}
+              git push origin ${release_version}
+            """
 
             tag_stage_result = true;
-            }
           } catch (e) {
             tag_stage_result = false
           }
@@ -203,19 +211,13 @@ pipeline {
       steps {
         echo "Syncing develop branch with master branch..."
 
-        git branch: "develop", credentialsId: 'hai.dinh', url: scm.getUserRemoteConfigs()[0].getUrl()
-
-        script {
-          withCredentials([[$class: 'UsernamePasswordMultiBinding', credentialsId:'hai.dinh', usernameVariable: 'USERNAME', passwordVariable: 'PASSWORD']]) {
-            origin_url = scm.getUserRemoteConfigs()[0].getUrl().split('//')[1]
-
-            sh """
-              git remote set-url origin https://$USERNAME:$PASSWORD@${origin_url}
-              git merge master
-              git push origin develop
-            """
-            }
-        }
+        sh """
+          cd app
+          git fetch --all
+          git checkout develop
+          git merge master
+          git push origin develop
+        """
         
         echo "Done."
       }
